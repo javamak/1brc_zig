@@ -1,0 +1,4 @@
+.zig-cache
+/zig-out
+one.ppm
+measurements.txt
