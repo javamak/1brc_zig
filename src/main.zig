@@ -21,54 +21,128 @@ pub fn main() !void {
     var file = try std.fs.cwd().openFile("measurements.txt", .{});
     defer file.close();
 
-    var buff: [4096]u8 = undefined;
+    const chunks = try calculateChunks(allocator, file);
+    defer allocator.free(chunks);
 
-    var map = std.StringHashMap(Result).init(allocator);
-    defer map.deinit();
+    var threads = try allocator.alloc(std.Thread, chunks.len);
+    defer allocator.free(threads);
+    var maps = try allocator.alloc(*std.StringHashMap(Result), chunks.len);
+    defer allocator.free(maps);
 
-    // var i: usize = 0;
-    while (true) {
-        //file.seekBy(10);
-        const len = try file.read(&buff);
+    var i: usize = 0;
+    for (chunks) |chunk| {
+        // var map = std.StringHashMap(Result).init(allocator);
+        const map_ptr = try allocator.create(std.StringHashMap(Result));
+        map_ptr.* = std.StringHashMap(Result).init(allocator);
+        maps[i] = map_ptr;
+        const thread = try std.Thread.spawn(.{}, task, .{ allocator, file, chunk, map_ptr });
+        threads[i] = thread;
 
-        var itr = std.mem.splitAny(u8, buff[0..len], "\n");
-        while (itr.next()) |entry| {
-            if (entry.len == 0) {
-                break;
-            }
-            if (len == buff.len and itr.peek() == null) { //if last entry skip it and seek back in the file.
-                const pos = -@as(isize, @intCast(entry.len));
-                try file.seekBy(pos);
-                break;
-            }
-            var item_itr = std.mem.splitAny(u8, entry, ";");
-            const station = item_itr.next().?;
-            const temp = try std.fmt.parseFloat(f64, item_itr.next().?);
-
-            const result = map.getPtr(station);
-
-            if (result) |mes| {
-                mes.count += 1;
-                mes.max = @max(mes.max, temp);
-                mes.min = @min(mes.min, temp);
-                mes.sum += temp;
-            } else {
-                const mes = Result{ .min = temp, .max = temp, .count = 1, .sum = temp };
-                const key_copy = try allocator.dupe(u8, station);
-                try map.put(key_copy, mes);
-            }
-            // std.debug.print("{d}\n", .{i});
-            // i += 1;
-        }
-
-        if (len < buff.len) {
-            break;
-        }
+        i += 1;
+    }
+    for (threads) |thread| {
+        thread.join();
     }
 
-    var itr = map.iterator();
+    var finalMap = std.StringHashMap(Result).init(allocator);
+    defer finalMap.deinit();
+
+    for (maps) |map| {
+        try mergeMaps(allocator, &finalMap, map);
+    }
+
+    var itr = finalMap.iterator();
     while (itr.next()) |entry| {
         std.debug.print("{s}:{d}/{d}/{d}, ", .{ entry.key_ptr.*, entry.value_ptr.min, std.math.round(entry.value_ptr.sum / @as(f64, @floatFromInt(entry.value_ptr.count)) * 10) / 10, entry.value_ptr.max });
         allocator.free(entry.key_ptr.*);
     }
+}
+
+fn mergeMaps(allocator: std.mem.Allocator, finalMap: *std.StringHashMap(Result), map: *std.StringHashMap(Result)) !void {
+    var itr = map.iterator();
+    while (itr.next()) |entry| {
+        const result = finalMap.getPtr(entry.key_ptr.*);
+
+        if (result) |mes| {
+            mes.count += entry.value_ptr.count;
+            mes.max = @max(mes.max, entry.value_ptr.max);
+            mes.min = @min(mes.min, entry.value_ptr.min);
+            mes.sum += entry.value_ptr.sum;
+            allocator.free(entry.key_ptr.*);
+        } else {
+            try finalMap.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+    }
+    map.*.deinit();
+    allocator.destroy(map);
+}
+
+fn task(allocator: std.mem.Allocator, file: std.fs.File, chunk: Chunk, map: *std.StringHashMap(Result)) !void {
+    const buff = try allocator.alloc(u8, chunk.end - chunk.start);
+    defer allocator.free(buff);
+
+    _ = try file.pread(buff, chunk.start);
+    var itr = std.mem.splitAny(u8, buff, "\n");
+
+    while (itr.next()) |entry| {
+        if (entry.len == 0) {
+            break;
+        }
+
+        var item_itr = std.mem.splitAny(u8, entry, ";");
+        const station = item_itr.next().?;
+        const temp = try std.fmt.parseFloat(f64, item_itr.next().?);
+
+        const result = map.getPtr(station);
+
+        if (result) |mes| {
+            mes.count += 1;
+            mes.max = @max(mes.max, temp);
+            mes.min = @min(mes.min, temp);
+            mes.sum += temp;
+        } else {
+            const mes = Result{ .min = temp, .max = temp, .count = 1, .sum = temp };
+            const key_copy = try allocator.dupe(u8, station);
+            try map.put(key_copy, mes);
+        }
+    }
+}
+
+const Chunk = struct { start: u64 = 0, end: u64 = 0 };
+
+fn calculateChunks(allocator: std.mem.Allocator, file: std.fs.File) ![]Chunk {
+    const chunk_size: u64 = 1000 * 200000;
+    const max = try file.getEndPos();
+
+    const chunks = @as(u64, @intFromFloat(@ceil(@as(f64, @floatFromInt(max)) / @as(f64, @floatFromInt(chunk_size)))));
+    // const chunks: u64 = 3;
+
+    const arr = try allocator.alloc(Chunk, chunks);
+
+    var start: u64 = 0;
+    var end: u64 = chunk_size;
+
+    var buff: [100]u8 = undefined;
+
+    for (0..chunks) |i| {
+        if (end >= max) {
+            end = max;
+            arr[i] = Chunk{ .start = start, .end = end };
+            break;
+        }
+
+        try file.seekTo(end);
+        const len = try file.read(&buff);
+        for (0..len) |j| {
+            end += 1;
+            if (buff[j] == '\n') {
+                break;
+            }
+        }
+
+        arr[i] = Chunk{ .start = start, .end = end };
+        start = end;
+        end += chunk_size;
+    }
+    return arr;
 }
