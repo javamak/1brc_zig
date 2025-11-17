@@ -1,4 +1,5 @@
 const std = @import("std");
+const ordered = @import("ordered");
 
 const Result = struct {
     min: f64 = std.math.floatMax(f64),
@@ -7,6 +8,13 @@ const Result = struct {
     sum: f64 = 0,
     count: usize = 0,
 };
+
+// The function must return a `std.math.Order` value based on the comparison of the two keys
+fn strCompare(lhs: []const u8, rhs: []const u8) std.math.Order {
+    return std.mem.order(u8, lhs, rhs);
+}
+
+const btree_type = ordered.BTreeMap([]const u8, Result, strCompare, 4);
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -18,7 +26,7 @@ pub fn main() !void {
         if (deinit_status == .leak) @panic("Memory leak");
     }
 
-    var file = try std.fs.cwd().openFile("measurements.txt", .{});
+    var file = try std.fs.cwd().openFile("/home/arun/Work/1brc/measurements.txt", .{});
     defer file.close();
 
     const chunks = try calculateChunks(allocator, file);
@@ -44,21 +52,22 @@ pub fn main() !void {
         thread.join();
     }
 
-    var finalMap = std.StringHashMap(Result).init(allocator);
+    // var finalMap = std.StringHashMap(Result).init(allocator);
+    var finalMap = btree_type.init(allocator);
     defer finalMap.deinit();
 
     for (maps) |map| {
         try mergeMaps(allocator, &finalMap, map);
     }
 
-    var itr = finalMap.iterator();
-    while (itr.next()) |entry| {
-        std.debug.print("{s}:{d}/{d}/{d}, ", .{ entry.key_ptr.*, entry.value_ptr.min, std.math.round(entry.value_ptr.sum / @as(f64, @floatFromInt(entry.value_ptr.count)) * 10) / 10, entry.value_ptr.max });
-        allocator.free(entry.key_ptr.*);
+    var itr = try finalMap.iterator();
+    while (try itr.next()) |entry| {
+        std.debug.print("{s}:{d}/{d}/{d}, ", .{ entry.key, entry.value.min, std.math.round(entry.value.sum / @as(f64, @floatFromInt(entry.value.count)) * 10) / 10, entry.value.max });
+        // allocator.free(entry.key);
     }
 }
 
-fn mergeMaps(allocator: std.mem.Allocator, finalMap: *std.StringHashMap(Result), map: *std.StringHashMap(Result)) !void {
+fn mergeMaps(allocator: std.mem.Allocator, finalMap: *btree_type, map: *std.StringHashMap(Result)) !void {
     var itr = map.iterator();
     while (itr.next()) |entry| {
         const result = finalMap.getPtr(entry.key_ptr.*);
