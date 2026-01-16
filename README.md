@@ -34,7 +34,7 @@ real    0m1.268s<br>
 user    0m25.999s<br>
 sys     0m0.401s
 
-### Latest Optimizations. Custom Hash Map: Implemented a fixed-size, linear-probing hash map (StationMap) to eliminate memory allocations during processing.
+### Latest Optimizations. Custom Hash Map: Implemented a fixed-size, linear-probing hash map (StationMap) to eliminate memory allocations during processing. See [StationMap Explanation](docs/StationMap.md).
 
 real    0m0.968s<br>
 user    0m19.987s<br>
@@ -49,3 +49,8 @@ To run the test:
 ```sh
 ./test.sh
 ```
+
+
+### Code explanation
+[StationMap Explanation](docs/StationMap.md).
+[Task method Explanation](docs/task.md).
