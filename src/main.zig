@@ -17,7 +17,11 @@ pub fn main() !void {
         if (deinit_status == .leak) @panic("Memory leak");
     }
 
-    var file = try std.fs.cwd().openFile("/home/arun/Work/1brc/measurements.txt", .{});
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    const filename = if (args.len > 1) args[1] else "/home/arun/Work/1brc/measurements.txt";
+    var file = try std.fs.cwd().openFile(filename, .{});
 
     const data = try std.posix.mmap(null, try file.getEndPos(), std.posix.PROT.READ, .{ .TYPE = .SHARED }, file.handle, 0);
     defer std.posix.munmap(data);
@@ -68,12 +72,19 @@ pub fn main() !void {
         }
     }.lessThan);
 
+    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
+    try stdout.print("{{", .{});
     for (list.items) |res| {
         const min = @as(f64, @floatFromInt(res.min)) / 10.0;
         const max = @as(f64, @floatFromInt(res.max)) / 10.0;
         const avg = std.math.round(@as(f64, @floatFromInt(res.sum)) / @as(f64, @floatFromInt(res.count))) / 10.0;
-        std.debug.print("{s}:{d:.1}/{d:.1}/{d:.1}, ", .{ res.key, min, avg, max });
+        try stdout.print("{s}={d:.1}/{d:.1}/{d:.1}, ", .{ res.key, min, avg, max });
     }
+    try stdout.print("}}\n", .{});
+    try stdout.flush();
 }
 
 fn mergeMaps(allocator: std.mem.Allocator, finalMap: *std.StringHashMap(Result), map: *std.StringHashMap(Result)) !void {
