@@ -36,8 +36,8 @@ sys     0m0.401s
 
 ### Latest Optimizations. Custom Hash Map: Implemented a fixed-size, linear-probing hash map (StationMap) to eliminate memory allocations during processing.
 
-real    0m0.968s
-user    0m19.987s
+real    0m0.968s<br>
+user    0m19.987s<br>
 sys     0m0.360s
 
 ## Testing
