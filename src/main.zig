@@ -1,20 +1,12 @@
 const std = @import("std");
-const ordered = @import("ordered");
 
 const Result = struct {
-    min: f64 = std.math.floatMax(f64),
-    max: f64 = std.math.floatMax(f64),
-    avg: f64 = 0,
-    sum: f64 = 0,
+    key: []const u8 = &[_]u8{},
+    min: i32 = std.math.maxInt(i32),
+    max: i32 = std.math.minInt(i32),
+    sum: i64 = 0,
     count: usize = 0,
 };
-
-// The function must return a `std.math.Order` value based on the comparison of the two keys
-fn strCompare(lhs: []const u8, rhs: []const u8) std.math.Order {
-    return std.mem.order(u8, lhs, rhs);
-}
-
-const btree_type = ordered.BTreeMap([]const u8, Result, strCompare, 4);
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -22,7 +14,6 @@ pub fn main() !void {
 
     defer {
         const deinit_status = gpa.deinit();
-        //fail test; can't try in defer as defer is executed after we return
         if (deinit_status == .leak) @panic("Memory leak");
     }
 
@@ -42,11 +33,10 @@ pub fn main() !void {
 
     var i: usize = 0;
     for (chunks) |chunk| {
-        // var map = std.StringHashMap(Result).init(allocator);
         const map_ptr = try allocator.create(std.StringHashMap(Result));
         map_ptr.* = std.StringHashMap(Result).init(allocator);
         maps[i] = map_ptr;
-        const thread = try std.Thread.spawn(.{}, task, .{ allocator, data, chunk, map_ptr });
+        const thread = try std.Thread.spawn(.{}, task, .{ data, chunk, map_ptr });
         threads[i] = thread;
 
         i += 1;
@@ -55,32 +45,47 @@ pub fn main() !void {
         thread.join();
     }
 
-    // var finalMap = std.StringHashMap(Result).init(allocator);
-    var finalMap = btree_type.init(allocator);
+    var finalMap = std.StringHashMap(Result).init(allocator);
     defer finalMap.deinit();
 
     for (maps) |map| {
         try mergeMaps(allocator, &finalMap, map);
     }
 
-    var itr = try finalMap.iterator();
-    while (try itr.next()) |entry| {
-        std.debug.print("{s}:{d}/{d}/{d}, ", .{ entry.key, entry.value.min, std.math.round(entry.value.sum / @as(f64, @floatFromInt(entry.value.count)) * 10) / 10, entry.value.max });
-        // allocator.free(entry.key);
+    var list: std.ArrayList(Result) = .empty;
+    defer list.deinit(allocator);
+
+    var itr = finalMap.iterator();
+    while (itr.next()) |entry| {
+        var res = entry.value_ptr.*;
+        res.key = entry.key_ptr.*;
+        try list.append(allocator, res);
+    }
+
+    std.sort.block(Result, list.items, {}, struct {
+        fn lessThan(_: void, lhs: Result, rhs: Result) bool {
+            return std.mem.order(u8, lhs.key, rhs.key) == .lt;
+        }
+    }.lessThan);
+
+    for (list.items) |res| {
+        const min = @as(f64, @floatFromInt(res.min)) / 10.0;
+        const max = @as(f64, @floatFromInt(res.max)) / 10.0;
+        const avg = std.math.round(@as(f64, @floatFromInt(res.sum)) / @as(f64, @floatFromInt(res.count))) / 10.0;
+        std.debug.print("{s}:{d:.1}/{d:.1}/{d:.1}, ", .{ res.key, min, avg, max });
     }
 }
 
-fn mergeMaps(allocator: std.mem.Allocator, finalMap: *btree_type, map: *std.StringHashMap(Result)) !void {
+fn mergeMaps(allocator: std.mem.Allocator, finalMap: *std.StringHashMap(Result), map: *std.StringHashMap(Result)) !void {
     var itr = map.iterator();
     while (itr.next()) |entry| {
         const result = finalMap.getPtr(entry.key_ptr.*);
 
         if (result) |mes| {
             mes.count += entry.value_ptr.count;
-            mes.max = @max(mes.max, entry.value_ptr.max);
-            mes.min = @min(mes.min, entry.value_ptr.min);
+            if (entry.value_ptr.max > mes.max) mes.max = entry.value_ptr.max;
+            if (entry.value_ptr.min < mes.min) mes.min = entry.value_ptr.min;
             mes.sum += entry.value_ptr.sum;
-            allocator.free(entry.key_ptr.*);
         } else {
             try finalMap.put(entry.key_ptr.*, entry.value_ptr.*);
         }
@@ -90,7 +95,6 @@ fn mergeMaps(allocator: std.mem.Allocator, finalMap: *btree_type, map: *std.Stri
 }
 
 fn task(
-    allocator: std.mem.Allocator,
     data: []const u8,
     chunk: Chunk,
     map: *std.StringHashMap(Result),
@@ -98,33 +102,48 @@ fn task(
     // Slice directly from mmap
     const buff = data[chunk.start..chunk.end];
 
-    var itr = std.mem.splitScalar(u8, buff, '\n');
-    while (itr.next()) |entry| {
-        if (entry.len == 0) continue;
+    var cursor: usize = 0;
+    while (cursor < buff.len) {
+        const remaining = buff[cursor..];
+        const semi = std.mem.indexOfScalar(u8, remaining, ';') orelse break;
+        const station = remaining[0..semi];
 
-        var item_itr = std.mem.splitScalar(u8, entry, ';');
+        var idx = semi + 1;
+        var temp: i32 = 0;
+        var sign: i32 = 1;
 
-        const station = item_itr.next() orelse continue;
-        const temp_str = item_itr.next() orelse continue;
+        if (remaining[idx] == '-') {
+            sign = -1;
+            idx += 1;
+        }
 
-        const temp = try std.fmt.parseFloat(f64, temp_str);
+        while (remaining[idx] != '.') {
+            temp = temp * 10 + (remaining[idx] - '0');
+            idx += 1;
+        }
+        idx += 1; // skip .
+        temp = temp * 10 + (remaining[idx] - '0');
+        idx += 1; // skip decimal digit
+        if (idx < remaining.len and remaining[idx] == '\r') idx += 1;
+        idx += 1; // skip newline
+        cursor += idx;
 
-        if (map.getPtr(station)) |mes| {
+        temp *= sign;
+
+        const gop = try map.getOrPut(station);
+        if (gop.found_existing) {
+            const mes = gop.value_ptr;
             mes.count += 1;
-            mes.max = @max(mes.max, temp);
-            mes.min = @min(mes.min, temp);
+            if (temp > mes.max) mes.max = temp;
+            if (temp < mes.min) mes.min = temp;
             mes.sum += temp;
         } else {
-            const mes = Result{
+            gop.value_ptr.* = Result{
                 .min = temp,
                 .max = temp,
                 .count = 1,
                 .sum = temp,
             };
-
-            // station must be owned by the map
-            const key_copy = try allocator.dupe(u8, station);
-            try map.put(key_copy, mes);
         }
     }
 }
@@ -150,7 +169,7 @@ fn calculateChunks(
         if (end >= max) {
             end = max;
             arr[i] = Chunk{ .start = start, .end = end };
-            break;
+            return allocator.realloc(arr, i + 1);
         }
 
         // move `end` forward until newline
