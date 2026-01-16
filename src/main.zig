@@ -8,6 +8,37 @@ const Result = struct {
     count: usize = 0,
 };
 
+const MapSize = 1000;
+const StationMap = struct {
+    keys: [MapSize][]const u8,
+    hashes: [MapSize]u64,
+    values: [MapSize]Result,
+
+    fn init() StationMap {
+        return .{
+            .keys = @as([MapSize][]const u8, @splat(&[_]u8{})),
+            .hashes = @as([MapSize]u64, @splat(0)),
+            .values = undefined,
+        };
+    }
+
+    fn getByHash(self: *StationMap, key: []const u8, hash: u64) *Result {
+        var idx = hash % MapSize;
+        while (true) {
+            if (self.keys[idx].len == 0) {
+                self.keys[idx] = key;
+                self.hashes[idx] = hash;
+                self.values[idx] = Result{};
+                return &self.values[idx];
+            }
+            if (self.hashes[idx] == hash and std.mem.eql(u8, self.keys[idx], key)) {
+                return &self.values[idx];
+            }
+            idx = (idx + 1) % MapSize;
+        }
+    }
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
@@ -32,13 +63,13 @@ pub fn main() !void {
 
     var threads = try allocator.alloc(std.Thread, chunks.len);
     defer allocator.free(threads);
-    var maps = try allocator.alloc(*std.StringHashMap(Result), chunks.len);
+    var maps = try allocator.alloc(*StationMap, chunks.len);
     defer allocator.free(maps);
 
     var i: usize = 0;
     for (chunks) |chunk| {
-        const map_ptr = try allocator.create(std.StringHashMap(Result));
-        map_ptr.* = std.StringHashMap(Result).init(allocator);
+        const map_ptr = try allocator.create(StationMap);
+        map_ptr.* = StationMap.init();
         maps[i] = map_ptr;
         const thread = try std.Thread.spawn(.{}, task, .{ data, chunk, map_ptr });
         threads[i] = thread;
@@ -87,39 +118,77 @@ pub fn main() !void {
     try stdout.flush();
 }
 
-fn mergeMaps(allocator: std.mem.Allocator, finalMap: *std.StringHashMap(Result), map: *std.StringHashMap(Result)) !void {
-    var itr = map.iterator();
-    while (itr.next()) |entry| {
-        const result = finalMap.getPtr(entry.key_ptr.*);
+fn mergeMaps(allocator: std.mem.Allocator, finalMap: *std.StringHashMap(Result), map: *StationMap) !void {
+    for (map.keys, 0..) |key, i| {
+        if (key.len == 0) continue;
+        const result = finalMap.getPtr(key);
 
         if (result) |mes| {
-            mes.count += entry.value_ptr.count;
-            if (entry.value_ptr.max > mes.max) mes.max = entry.value_ptr.max;
-            if (entry.value_ptr.min < mes.min) mes.min = entry.value_ptr.min;
-            mes.sum += entry.value_ptr.sum;
+            const val = map.values[i];
+            mes.count += val.count;
+            if (val.max > mes.max) mes.max = val.max;
+            if (val.min < mes.min) mes.min = val.min;
+            mes.sum += val.sum;
         } else {
-            try finalMap.put(entry.key_ptr.*, entry.value_ptr.*);
+            try finalMap.put(key, map.values[i]);
         }
     }
-    map.*.deinit();
     allocator.destroy(map);
 }
 
 fn task(
     data: []const u8,
     chunk: Chunk,
-    map: *std.StringHashMap(Result),
+    map: *StationMap,
 ) !void {
     // Slice directly from mmap
     const buff = data[chunk.start..chunk.end];
 
     var cursor: usize = 0;
-    while (cursor < buff.len) {
-        const remaining = buff[cursor..];
-        const semi = std.mem.indexOfScalar(u8, remaining, ';') orelse break;
-        const station = remaining[0..semi];
+    const broadcast_semi: u64 = 0x3B3B3B3B3B3B3B3B;
 
-        var idx = semi + 1;
+    while (cursor < buff.len) {
+        var h: u64 = 0;
+        const start = cursor;
+
+        // SWAR loop to find ';' and compute hash simultaneously
+        while (cursor + 8 <= buff.len) {
+            const word = std.mem.readInt(u64, buff[cursor..][0..8], .little);
+            const match = word ^ broadcast_semi;
+            const mask = (match -% 0x0101010101010101) & ~match & 0x8080808080808080;
+
+            if (mask != 0) {
+                const bit_idx = @ctz(mask);
+                const byte_idx = bit_idx >> 3;
+                if (byte_idx > 0) {
+                    const shift_bits = @as(u6, @intCast(byte_idx)) * 8;
+                    const word_mask = (@as(u64, 1) << shift_bits) - 1;
+                    h ^= (word & word_mask);
+                }
+                h *%= 0x100000001b3;
+                cursor += byte_idx;
+                break;
+            }
+            h ^= word;
+            h *%= 0x100000001b3;
+            cursor += 8;
+        }
+
+        // Fallback for remaining bytes
+        if (cursor < buff.len and buff[cursor] != ';') {
+            while (cursor < buff.len and buff[cursor] != ';') {
+                h ^= buff[cursor];
+                h *%= 0x100000001b3;
+                cursor += 1;
+            }
+        }
+
+        const station = buff[start..cursor];
+        const mes = map.getByHash(station, h);
+
+        cursor += 1; // skip ';'
+        const remaining = buff[cursor..];
+        var idx: usize = 0;
         var temp: i32 = 0;
         var sign: i32 = 1;
 
@@ -128,34 +197,26 @@ fn task(
             idx += 1;
         }
 
-        while (remaining[idx] != '.') {
-            temp = temp * 10 + (remaining[idx] - '0');
+        var val: i32 = remaining[idx] - '0';
+        idx += 1;
+
+        if (remaining[idx] != '.') {
+            val = val * 10 + (remaining[idx] - '0');
             idx += 1;
         }
         idx += 1; // skip .
-        temp = temp * 10 + (remaining[idx] - '0');
+        val = val * 10 + (remaining[idx] - '0');
         idx += 1; // skip decimal digit
         if (idx < remaining.len and remaining[idx] == '\r') idx += 1;
         idx += 1; // skip newline
         cursor += idx;
 
-        temp *= sign;
+        temp = val * sign;
 
-        const gop = try map.getOrPut(station);
-        if (gop.found_existing) {
-            const mes = gop.value_ptr;
-            mes.count += 1;
-            if (temp > mes.max) mes.max = temp;
-            if (temp < mes.min) mes.min = temp;
-            mes.sum += temp;
-        } else {
-            gop.value_ptr.* = Result{
-                .min = temp,
-                .max = temp,
-                .count = 1,
-                .sum = temp,
-            };
-        }
+        mes.count += 1;
+        if (temp > mes.max) mes.max = temp;
+        if (temp < mes.min) mes.min = temp;
+        mes.sum += temp;
     }
 }
 

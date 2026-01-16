@@ -34,6 +34,12 @@ real    0m1.268s<br>
 user    0m25.999s<br>
 sys     0m0.401s
 
+### Latest Optimizations. Custom Hash Map: Implemented a fixed-size, linear-probing hash map (StationMap) to eliminate memory allocations during processing.
+
+real    0m0.968s
+user    0m19.987s
+sys     0m0.360s
+
 ## Testing
 
 The `test.sh` script builds the project in ReleaseFast mode and runs it against a test input file (`test-in.txt`), comparing the output to the expected result (`test-out.txt`).
