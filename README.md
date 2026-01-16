@@ -30,9 +30,9 @@ sys     0m0.683s
 
 ### Execution time after using integers for storing and calculating the weather data and using std collections.
 
-real    0m2.161s<br>
-user    0m45.055s<br>
-sys     0m0.683s
+real    0m1.268s<br>
+user    0m25.999s<br>
+sys     0m0.401s
 
 ## Testing
 
