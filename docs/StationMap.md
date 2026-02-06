@@ -76,4 +76,4 @@ fn getByHash(self: *StationMap, key: []const u8, hash: u64) *Result {
 
 ### Limitations
 *   **Fixed Size**: If the input file has more than 1000 unique stations, this code will enter an infinite loop (it assumes it will eventually find an empty slot).
-*   **Power of 2 vs Modulo**: In your previous version, `MapSize` was a power of 2 (e.g., 32768), allowing `hash & (MapSize - 1)`. Since it is now `1000`, it uses `hash % MapSize`, which involves a division instruction (slower than bitwise AND), but `1000` is small enough that the cache benefits likely outweigh the division cost.
+*   **Power of 2 vs Modulo**: In the previous version, `MapSize` was a power of 2 (e.g., 32768), allowing `hash & (MapSize - 1)`. Since it is now `1000`, it uses `hash % MapSize`, which involves a division instruction (slower than bitwise AND), but `1000` is small enough that the cache benefits likely outweigh the division cost.
